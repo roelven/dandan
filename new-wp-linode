@@ -1,0 +1,41 @@
+#!/bin/bash
+
+set -e
+
+exec &> /root/provision.log
+
+source <ssinclude StackScriptID=1>
+source <ssinclude StackScriptID=635083>
+
+export DEBIAN_FRONTEND=noninteractive
+
+system_update
+system_install_basics
+system_update_hostname "hk-ypa-wp"
+system_security_configure_ufw
+system_sshd_security
+
+goodstuff
+
+install_php-fpm
+install_mariadb
+install_nginx
+
+# Run weekly mysqlcheck to keep tables healthy
+echo "0 0 * * 0 mysqlcheck -o --user=root --password="$DB_PASSWORD" -A" | crontab -
+
+git clone https://github.com/letsencrypt/letsencrypt /opt/letsencrypt
+touch /root/.bashrc && touch /home/"$USERNAME"/.bashrc
+sed -i -e 's/^#PS1=/PS1=/' /root/.bashrc && sed -i -e 's/^#PS1=/PS1=/' /home/"$USERNAME"/.bashrc
+
+# Install Linode Longview
+# UPDATE TO CORRECT URL
+curl -s https://lv.linode.com/C8CF4B19-A4B5-8ED9-7C59945EAD75D484 | sudo bash
+
+# Start ssh agent to enable Github ssh keys
+eval "$(ssh-agent -s)"
+
+ssh_disable_root
+
+system_restart_initd_services
+system_restart_services
