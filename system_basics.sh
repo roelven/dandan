@@ -1,211 +1,314 @@
 #!/bin/bash
-#
-# System basics
-#
-# Copyright (c) 2015 Roel van der Ven (hello@roelvanderven.com)
-# based on https://www.linode.com/stackscripts/view/123
+
 #
 
+# System basics
+
+#
+
+# Copyright (c) 2019 Roel van der Ven (hello@roelvanderven.com)
+
+# based on https://www.linode.com/stackscripts/view/123
+
+#
+
+###########################################################
+
+# Updates & Basic Configs
+
+###########################################################
+
 function lower {
+
     # helper function
+
     echo $1 | tr '[:upper:]' '[:lower:]'
+
+}
+
+function system_update {
+
+    apt-get update && apt-get install -y aptitude
+
+    aptitude -y full-upgrade
+
 }
 
 function system_install_basics {
-	aptitude -y install wget vim less htop fail2ban logrotate bash-completion rsync
+
+    locale-gen en_US en_US.UTF-8 en_GB.UTF-8 en_GB
+
+    dpkg-reconfigure locales
+
+    #set timezone to UTC
+
+    ln -s -f /usr/share/zoneinfo/UTC /etc/localtime
+
+    aptitude -y install monit wget curl less htop mytop fail2ban logrotate bash-completion rsync
+
+    sed -i -e 's/^#PS1=/PS1=/' /root/.bashrc # enable the colorful root bash prompt
+
+    sed -i -e "s/^#alias ll='ls -l'/alias ll='ls -al'/" /root/.bashrc # enable ll list long alias <3
+
 }
 
 function system_security_configure_ufw {
+
     ufw logging on
 
     ufw default deny
 
     ufw allow ssh/tcp
+
     ufw limit ssh/tcp
 
     ufw enable
+
 }
 
 function system_update_hostname {
+
 	# system_update_hostname(hostname)
+
     if [ -z "$1" ]; then
+
         echo "system_update_hostname() requires the system hostname as its first argument"
+
         return 1;
+
     fi
+
     echo $1 > /etc/hostname
+
     hostname -F /etc/hostname
+
     echo -e "\n127.0.0.1 $1 $1.local\n" >> /etc/hosts
+
 }
 
 function system_sshd_security {
-    # Disables root SSH access and password logins.
-    sed -i 's/PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config
-    sed -i 's/PubkeyAuthentication no/PubkeyAuthentication yes/' /etc/ssh/sshd_config
-    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
-    touch /tmp/restart-ssh
-}
 
-function system_configure_private_network {
-	# system_configure_private_network(ip_address)
-    PRIVATE_IP=$1
-    NETMASK="255.255.128.0"
-    cat >>/etc/network/interfaces <<EOF
-auto eth0:0
-iface eth0:0 inet static
- address $PRIVATE_IP
- netmask $NETMASK
-EOF
-    touch /tmp/restart_initd-networking
+    # Disables root SSH access and password logins.
+
+    sed -i 's/PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config
+
+    sed -i 's/PubkeyAuthentication no/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+
+    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
+
+    touch /tmp/restart-ssh
+
 }
 
 function system_restart_services {
+
     # restarts upstart services that have a file in /tmp/
+
     system_restart_initd_services
+
     for service_name in $(ls /tmp/ | grep restart-* | cut -d- -f2-10); do
+
         service $service_name restart
+
         rm -f /tmp/restart-$service_name
+
     done
+
 }
 
 function system_restart_initd_services {
+
     # restarts upstart services that have a file in /tmp
+
     for service_name in $(ls /tmp/ | grep restart_initd-* | cut -d- -f2-10); do
+
         /etc/init.d/$service_name restart
+
         rm -f /tmp/restart_initd-$service_name
+
     done
+
 }
 
-function php_install_extensions {
-    aptitude -y install php5 php5-mysql libapache2-mod-php5 php5-curl php5-gd php5-mcrypt php-apc php5-memcache
-    touch /tmp/restart-apache2
+function install_php-fpm {
+
+    add-apt-repository ppa:ondrej/php -y && apt update -y
+
+    apt install -y php5.6-fpm php5.6-mysql php5.6-curl php5.6-gd php5.6-mcrypt php5.6-memcache php5.6-zip php5.6-common php5.6-mbstring php5.6-opcache
+
 }
 
-function system_create_virtualhost {
-    # Configures a VirtualHost
-    # $1 - required - the hostname of the virtualhost to create
+function install_mariadb {
 
-    if [ ! -n $1 ]; then
-        echo "system_create_virtualhost() requires the hostname as the first argument"
+    apt install -y mariadb-server mariadb-client
+
+    echo "Sleeping while MySQL starts up for the first time..."
+
+    sleep 5
+
+    echo "0 0 * * 0 mysqlcheck -o --user=root --password="$DB_PASSWORD" -A" | crontab -
+
+}
+
+function install_nginx {
+
+    add-apt-repository -y ppa:nginx/stable
+
+    aptitude update
+
+    aptitude -y install nginx
+
+    cat <<EOT > /etc/nginx/fastcgi_config
+
+fastcgi_intercept_errors on;
+
+fastcgi_ignore_client_abort on;
+
+fastcgi_connect_timeout 60;
+
+fastcgi_send_timeout 180;
+
+fastcgi_read_timeout 180;
+
+fastcgi_buffer_size 128k;
+
+fastcgi_buffers 4 256k;
+
+fastcgi_busy_buffers_size 256k;
+
+fastcgi_temp_file_write_size 256k;
+
+fastcgi_max_temp_file_size 0;
+
+fastcgi_index index.php;
+
+EOT
+
+    cat <<EOT > /etc/nginx/sites-available/nginx_status
+
+server {
+
+    listen 127.0.0.1:80;
+
+    location /nginx_status {
+
+        stub_status on;
+
+        access_log off;
+
+    }
+
+}
+
+EOT
+
+    ln -sf /etc/nginx/sites-available/nginx_status /etc/nginx/sites-enabled/nginx_status
+
+    service nginx stop
+
+    sed -i 's/# gzip_types/gzip_types/' /etc/nginx/nginx.conf
+
+    sed -i 's/# gzip_vary/gzip_vary/' /etc/nginx/nginx.conf
+
+}
+
+###########################################################
+
+# Users and Authentication
+
+###########################################################
+
+function user_add_sudo {
+
+    # Installs sudo if needed and creates a user in the sudo group.
+
+    #
+
+    # $1 - Required - username
+
+    # $2 - Required - password
+
+    USERNAME="$1"
+
+    USERPASS="$2"
+
+    if [ ! -n "$USERNAME" ] || [ ! -n "$USERPASS" ]; then
+
+        echo "No new username and/or password entered"
+
         return 1;
+
     fi
 
-    if [ -e "/etc/apache2/sites-available/$1.conf" ]; then
-        echo /etc/apache2/sites-available/$1.conf already exists
-        return;
+    
+
+    aptitude -y install sudo
+
+    adduser $USERNAME --disabled-password --gecos ""
+
+    echo "$USERNAME:$USERPASS" | chpasswd
+
+    usermod -aG sudo $USERNAME
+
+}
+
+function user_add_pubkey {
+
+    # Adds the users public key to authorized_keys for the specified user. Make sure you wrap your input variables in double quotes, or the key may not load properly.
+
+    #
+
+    #
+
+    # $1 - Required - username
+
+    # $2 - Required - public key
+
+    USERNAME="$1"
+
+    USERPUBKEY="$2"
+
+    
+
+    if [ ! -n "$USERNAME" ] || [ ! -n "$USERPUBKEY" ]; then
+
+        echo "Must provide a username and the location of a pubkey"
+
+        return 1;
+
     fi
 
-    mkdir -p /srv/www/$1/current/public /srv/www/$1/logs
+    
 
-    cat >> /etc/apache2/sites-available/$1.conf <<EOF
-<VirtualHost *:80>
-    ServerAdmin webmaster@localhost
-    ServerName $1
+    if [ "$USERNAME" == "root" ]; then
 
-    DocumentRoot /srv/www/$1/current/public
+        mkdir /root/.ssh
 
-    <Directory />
-        Options +FollowSymLinks
-        AllowOverride None
-    </Directory>
-    <Directory /srv/www/$1/current/public>
-        Options -Indexes +FollowSymLinks -MultiViews
-        AllowOverride All
-        Require all granted
-    </Directory>
+        echo "$USERPUBKEY" >> /root/.ssh/authorized_keys
 
-    ScriptAlias /cgi-bin/ /usr/lib/cgi-bin/
-    <Directory "/usr/lib/cgi-bin">
-        AllowOverride None
-        Options +ExecCGI -MultiViews +SymLinksIfOwnerMatch
-        Require all granted
-    </Directory>
+        return 1;
 
-    # Possible values include: debug, info, notice, warn, error, crit,
-    # alert, emerg.
-    LogLevel warn
+    fi
 
-    ErrorLog /srv/www/$1/logs/error.log
-    CustomLog /srv/www/$1/logs/access.log combined
+    
 
-</VirtualHost>
-EOF
+    mkdir -p /home/$USERNAME/.ssh
 
-    chown -R www-data:www-data /srv/www/$1/public_html
-    a2ensite $1.conf
+    echo "$USERPUBKEY" >> /home/$USERNAME/.ssh/authorized_keys
 
-    touch /tmp/restart-apache2
+    chown -R "$USERNAME":"$USERNAME" /home/$USERNAME/.ssh
+
 }
 
-function mysql_setup {
-    # Insert Percona generated my.cnf based on our server specs
-    # We assume 1GB of RAM with 1 CPU core
+function ssh_disable_root {
 
-    cat <<EOF > /etc/mysql/my.cnf
-# Generated by Percona Configuration Wizard (http://tools.percona.com/) version REL5-20120208
-# Configuration name kubrick2 generated for hello@roelvanderven.com at 2015-09-28 12:34:44
+    # Disables root SSH access.
 
-[mysql]
+    sed -i 's/PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config
 
-# CLIENT #
-port                           = 3306
-socket                         = /var/lib/mysql/mysql.sock
+    touch /tmp/restart-ssh
 
-[mysqld]
+    
 
-# GENERAL #
-user                           = mysql
-default-storage-engine         = InnoDB
-socket                         = /var/lib/mysql/mysql.sock
-pid-file                       = /var/lib/mysql/mysql.pid
-
-# MyISAM #
-key-buffer-size                = 32M
-myisam-recover-options         = FORCE,BACKUP
-
-# SAFETY #
-max-allowed-packet             = 16M
-max-connect-errors             = 10000
-skip-name-resolve              = 1
-innodb                         = FORCE
-wait-timeout                   = 20
-
-# DATA STORAGE #
-datadir                        = /var/lib/mysql
-
-# BINARY LOGGING #
-log-bin                        = /var/lib/mysql/mysql-bin
-expire-logs-days               = 14
-sync-binlog                    = 1
-
-# CACHES AND LIMITS #
-tmp-table-size                 = 32M
-max-heap-table-size            = 32M
-query-cache-type               = 0
-query-cache-size               = 0
-max-connections                = 300 # Tested with ab for 60+ concurrent users 
-thread-cache-size              = 16
-open-files-limit               = 65535
-table-definition-cache         = 1024
-table-open-cache               = 0
-
-# INNODB #
-innodb-flush-method            = O_DIRECT
-innodb-log-files-in-group      = 2
-innodb-log-file-size           = 64M
-innodb-flush-log-at-trx-commit = 1
-innodb-file-per-table          = 1
-innodb-buffer-pool-size        = 592M
-
-# LOGGING #
-log-error                      = /var/log/mysql/mysql-error.log
-log-queries-not-using-indexes  = 1
-slow-query-log                 = 1
-slow-query-log-file            = /var/log/mysql/mysql-slow.log
-
-EOF
-
-    # rm InnoDB logfiles after changing config, mysql will reinitialize them
-    rm /var/lib/mysql/ib_logfile1 /var/lib/mysql/ib_logfile0
-
-    touch /tmp/restart-mysql
 }
+
