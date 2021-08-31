@@ -1,21 +1,13 @@
 #!/bin/bash
-
 #
-
 # System basics
-
 #
-
 # Copyright (c) 2019 Roel van der Ven (hello@roelvanderven.com)
-
 # based on https://www.linode.com/stackscripts/view/123
-
 #
 
 ###########################################################
-
 # Updates & Basic Configs
-
 ###########################################################
 
 function lower {
